@@ -58,6 +58,30 @@ mean_sq_dist = distCUDA2(pts)                     # [N] mean squared dist to 3-N
 scales = torch.sqrt(mean_sq_dist)                 # typical 3DGS scale init
 ```
 
+### Cross-set k-NN with returned indices
+
+This port also adds `knnIndices` — an exact, Morton-grid-accelerated cross-set
+k-nearest-neighbour query that returns neighbour **indices** (and squared
+distances), without materialising the full `Nq × Nr` distance matrix:
+
+```python
+from simple_knn._C import knnIndices
+
+query = torch.rand(2_000, 3, device="cuda")       # [Nq, 3] float32
+reference = torch.rand(100_000, 3, device="cuda") # [Nr, 3] float32
+
+idx, dist2 = knnIndices(query, reference, k=8, exclude_self=False)
+#   idx   : [Nq, k] int64  — indices into `reference`
+#   dist2 : [Nq, k] float32 — squared distances (ascending)
+
+# self k-NN (each point's k nearest *other* points):
+idx, dist2 = knnIndices(pts, pts, k=8, exclude_self=True)
+```
+
+`k ≤ 32`. The search is non-differentiable — gather on the (detached) indices to
+build any differentiable downstream term. Useful for cross-set dedup, off-surface
+/ floater metrics, nearest-correspondence matching, and PCA-over-k-NN normals.
+
 ## Building locally without a system ROCm install
 
 Use a ROCm PyTorch container (no GPU needed to *compile*):

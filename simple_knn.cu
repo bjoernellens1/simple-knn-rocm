@@ -192,6 +192,107 @@ __global__ void boxMeanDist(uint32_t P, float3* points, uint32_t* indices, MinMa
 	dists[indices[idx]] = (best[0] + best[1] + best[2]) / 3.0f;
 }
 
+// ---- Cross-set k-NN with returned indices (ROCm/HIP port addition) ----------
+#ifndef SKNN_MAX_K
+#define SKNN_MAX_K 32
+#endif
+
+// Insert (d, idx) into the per-thread top-k arrays kept sorted ascending by dist.
+__device__ __forceinline__ void knnInsert(float* bd, int64_t* bi, int k, float d, int64_t idx)
+{
+	if (d >= bd[k - 1])
+		return;
+	int pos = k - 1;
+	while (pos > 0 && bd[pos - 1] > d)
+	{
+		bd[pos] = bd[pos - 1];
+		bi[pos] = bi[pos - 1];
+		pos--;
+	}
+	bd[pos] = d;
+	bi[pos] = idx;
+}
+
+// For each query point, find the k nearest reference points using the same
+// Morton-box pruning as boxMeanDist. Reference is Morton-sorted (ref_sorted holds
+// original reference indices); boxes are min/max over BOX_SIZE-sized blocks of it.
+__global__ void knnIndicesKernel(
+	uint32_t Q, const float3* query, const float3* reference,
+	const uint32_t* ref_sorted, const MinMax* boxes, uint32_t num_boxes, uint32_t R,
+	int k, int exclude_self, int64_t* out_idx, float* out_dist2)
+{
+	uint32_t qi = SKNN_GLOBAL_THREAD_RANK();
+	if (qi >= Q)
+		return;
+
+	float3 p = query[qi];
+	float bd[SKNN_MAX_K];
+	int64_t bi[SKNN_MAX_K];
+	for (int j = 0; j < k; j++) { bd[j] = FLT_MAX; bi[j] = -1; }
+
+	for (uint32_t b = 0; b < num_boxes; b++)
+	{
+		if (distBoxPoint(boxes[b], p) > bd[k - 1])
+			continue;
+		uint32_t start = b * BOX_SIZE;
+		uint32_t end = min(R, (b + 1) * BOX_SIZE);
+		for (uint32_t i = start; i < end; i++)
+		{
+			uint32_t ridx = ref_sorted[i];
+			if (exclude_self && ridx == qi)
+				continue;
+			float3 r = reference[ridx];
+			float3 dd = { p.x - r.x, p.y - r.y, p.z - r.z };
+			float d = dd.x * dd.x + dd.y * dd.y + dd.z * dd.z;
+			knnInsert(bd, bi, k, d, (int64_t)ridx);
+		}
+	}
+
+	for (int j = 0; j < k; j++)
+	{
+		out_idx[(size_t)qi * k + j] = bi[j];
+		out_dist2[(size_t)qi * k + j] = bd[j];
+	}
+}
+
+void SimpleKNN::knnIndices(
+	int Q, const float3* query,
+	int R, const float3* reference,
+	int k, bool exclude_self,
+	int64_t* out_idx, float* out_dist2)
+{
+	if (Q <= 0 || R <= 0)
+		return;  // outputs are pre-filled with -1 / FLT_MAX by the caller
+
+	float3* result;
+	cudaMalloc(&result, sizeof(float3));
+	size_t temp_storage_bytes;
+	float3 init = { 0, 0, 0 }, minn, maxx;
+
+	cub::DeviceReduce::Reduce(nullptr, temp_storage_bytes, reference, result, R, CustomMin(), init);
+	thrust::device_vector<char> temp_storage(temp_storage_bytes);
+	cub::DeviceReduce::Reduce(temp_storage.data().get(), temp_storage_bytes, reference, result, R, CustomMin(), init);
+	cudaMemcpy(&minn, result, sizeof(float3), cudaMemcpyDeviceToHost);
+	cub::DeviceReduce::Reduce(temp_storage.data().get(), temp_storage_bytes, reference, result, R, CustomMax(), init);
+	cudaMemcpy(&maxx, result, sizeof(float3), cudaMemcpyDeviceToHost);
+
+	thrust::device_vector<uint32_t> morton(R), morton_sorted(R), indices(R), indices_sorted(R);
+	coord2Morton<<<(R + 255) / 256, 256>>> (R, reference, minn, maxx, morton.data().get());
+	thrust::sequence(indices.begin(), indices.end());
+	cub::DeviceRadixSort::SortPairs(nullptr, temp_storage_bytes, morton.data().get(), morton_sorted.data().get(), indices.data().get(), indices_sorted.data().get(), R);
+	temp_storage.resize(temp_storage_bytes);
+	cub::DeviceRadixSort::SortPairs(temp_storage.data().get(), temp_storage_bytes, morton.data().get(), morton_sorted.data().get(), indices.data().get(), indices_sorted.data().get(), R);
+
+	uint32_t num_boxes = (R + BOX_SIZE - 1) / BOX_SIZE;
+	thrust::device_vector<MinMax> boxes(num_boxes);
+	boxMinMax<<<num_boxes, BOX_SIZE>>> (R, (float3*)reference, indices_sorted.data().get(), boxes.data().get());
+	knnIndicesKernel<<<(Q + 255) / 256, 256>>> (
+		Q, query, reference, indices_sorted.data().get(), boxes.data().get(), num_boxes, R,
+		k, exclude_self ? 1 : 0, out_idx, out_dist2);
+
+	cudaFree(result);
+}
+
 void SimpleKNN::knn(int P, float3* points, float* meanDists)
 {
 	float3* result;

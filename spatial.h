@@ -10,5 +10,12 @@
  */
 
 #include <torch/extension.h>
+#include <tuple>
 
 torch::Tensor distCUDA2(const torch::Tensor& points);
+
+// Cross-set k-NN. Returns (idx [Nq, k] int64 into reference, dist2 [Nq, k] float32).
+// exclude_self skips the query's own index (use when query IS reference).
+std::tuple<torch::Tensor, torch::Tensor> knnIndices(
+    const torch::Tensor& query, const torch::Tensor& reference,
+    int64_t k, bool exclude_self);
