@@ -1,0 +1,8 @@
+build/
+dist/
+*.egg-info/
+*.whl
+*.so
+*.hip
+__pycache__/
+*.py[cod]
