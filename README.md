@@ -70,10 +70,33 @@ docker run --rm -v "$PWD":/src -w /src \
   bash -lc "pip wheel . --no-build-isolation -w dist"
 ```
 
-## Credits
+## Credits & sources
 
-- Original `simple-knn`: Inria GRAPHDECO (Bernhard Kerbl et al.), part of the
-  [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting)
-  project.
-- ROCm/HIP port: maintained for the
+This is a derivative ROCm/HIP port. **All credit for the algorithm and the original
+CUDA implementation goes to Inria GRAPHDECO.** This repository changes only the build
+so it runs on AMD GPUs; the KNN algorithm is unmodified.
+
+- **Original `simple-knn` (CUDA):** Inria GRAPHDECO research group —
+  <https://gitlab.inria.fr/bkerbl/simple-knn> (also distributed as the `simple-knn`
+  submodule of [graphdeco-inria/gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)).
+- **Method / paper:** Bernhard Kerbl, Georgios Kopanas, Thomas Leimkühler, George
+  Drettakis, *"3D Gaussian Splatting for Real-Time Radiance Field Rendering"*,
+  ACM Transactions on Graphics (SIGGRAPH 2023) —
+  <https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/>.
+- **License:** Inria GRAPHDECO research/evaluation license, preserved verbatim in
+  [`LICENSE.md`](LICENSE.md) and summarised in [`NOTICE`](NOTICE). For inquiries
+  contact george.drettakis@inria.fr (per the upstream license).
+- **ROCm/HIP port:** maintained for the
   [Splatograph](https://github.com/bjoernellens1/splatograph) ROCm 3DGS stack.
+
+```bibtex
+@Article{kerbl3Dgaussians,
+  author    = {Kerbl, Bernhard and Kopanas, Georgios and Leimk\"uhler, Thomas and Drettakis, George},
+  title     = {3D Gaussian Splatting for Real-Time Radiance Field Rendering},
+  journal   = {ACM Transactions on Graphics},
+  number    = {4},
+  volume    = {42},
+  year      = {2023},
+  url       = {https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/}
+}
+```
