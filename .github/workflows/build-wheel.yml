@@ -1,9 +1,10 @@
 name: build-wheel
 
 # Compiling the HIP extension needs only the ROCm toolchain (hipcc + hipCUB +
-# rocThrust), NOT an AMD GPU — so this runs on a standard GitHub-hosted runner
-# inside a rocm/pytorch container. The produced wheel embeds code objects for the
-# requested gfx arch(es) and can be installed on a matching ROCm host.
+# rocThrust), NOT an AMD GPU — so this builds on a standard GitHub-hosted runner
+# inside a rocm/pytorch container. The rocm/pytorch image is large (~30 GB+), so
+# we free disk space BEFORE pulling it (a job-level `container:` would pull before
+# any cleanup step could run and hit "no space left on device").
 
 on:
   push:
@@ -13,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       rocm_image:
-        description: 'ROCm PyTorch base image to build inside'
+        description: 'ROCm PyTorch image to build inside'
         default: 'rocm/pytorch:latest'
       arches:
         description: 'PYTORCH_ROCM_ARCH (semicolon-separated gfx targets)'
@@ -22,31 +23,37 @@ on:
 jobs:
   build-wheel:
     runs-on: ubuntu-latest
-    container:
-      image: ${{ github.event.inputs.rocm_image || 'rocm/pytorch:latest' }}
-    env:
-      PYTORCH_ROCM_ARCH: ${{ github.event.inputs.arches || 'gfx1100;gfx1101;gfx1102;gfx1151;gfx1200;gfx1201' }}
-      CUDA_HOME: /opt/rocm
-      ROCM_HOME: /opt/rocm
-      MAX_JOBS: '4'
     steps:
+      - name: Free up disk space for the ROCm image
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: false
+          swap-storage: false
+
       - uses: actions/checkout@v4
 
-      - name: Toolchain info
+      - name: Build + verify wheel in ROCm container
+        env:
+          ROCM_IMAGE: ${{ github.event.inputs.rocm_image || 'rocm/pytorch:latest' }}
+          ARCHES: ${{ github.event.inputs.arches || 'gfx1100;gfx1101;gfx1102;gfx1151;gfx1200;gfx1201' }}
         run: |
-          python -c "import torch; print('torch', torch.__version__, 'hip', torch.version.hip)"
-          hipconfig --version || true
-          echo "PYTORCH_ROCM_ARCH=$PYTORCH_ROCM_ARCH"
-
-      - name: Build wheel
-        run: |
-          pip wheel . --no-build-isolation -w dist
-          ls -la dist/
-
-      - name: Verify the extension imports (CPU import check)
-        run: |
-          pip install --no-deps dist/*.whl
-          python -c "import simple_knn._C as C; print('simple_knn._C OK:', C)"
+          docker run --rm -v "$PWD":/src -w /src \
+            -e PYTORCH_ROCM_ARCH="$ARCHES" \
+            -e CUDA_HOME=/opt/rocm -e ROCM_HOME=/opt/rocm -e MAX_JOBS=4 \
+            "$ROCM_IMAGE" bash -lc '
+              set -e
+              python -c "import torch; print(\"torch\", torch.__version__, \"hip\", torch.version.hip)"
+              echo "PYTORCH_ROCM_ARCH=$PYTORCH_ROCM_ARCH"
+              pip wheel . --no-build-isolation -w dist
+              pip install --no-deps dist/*.whl
+              python -c "import simple_knn._C as C; print(\"simple_knn._C OK:\", C)"
+              ls -la dist/
+            '
 
       - uses: actions/upload-artifact@v4
         with:
