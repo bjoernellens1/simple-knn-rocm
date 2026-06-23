@@ -51,7 +51,7 @@ jobs:
               echo "PYTORCH_ROCM_ARCH=$PYTORCH_ROCM_ARCH"
               pip wheel . --no-build-isolation -w dist
               pip install --no-deps dist/*.whl
-              python -c "import simple_knn._C as C; print(\"simple_knn._C OK:\", C)"
+              python -c "import torch; import simple_knn._C as C; print(\"simple_knn._C OK:\", C)"
               ls -la dist/
             '
 
